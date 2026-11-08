@@ -1,0 +1,247 @@
+# OpenCode2API
+
+<p align="center">
+  <img src="https://img.shields.io/badge/version-2.5.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  <img src="https://img.shields.io/badge/Node.js-18+-orange" alt="Node">
+</p>
+
+简体中文 | [English](./README.en.md)
+
+把本地 [OpenCode](https://opencode.ai) 运行时转换为 OpenAI 兼容 API 网关，在任何客户端中使用不限量的 OpenCode Zen 免费模型。
+
+## ✨ 功能特性
+
+- **OpenAI 兼容** — `/v1/models`、`/v1/chat/completions`、`/v1/responses`，完整 SSE 流式输出
+- **推理控制** — 支持 `reasoning_effort` 与 `reasoning: {"effort": "high"}`
+- **会话续接** — Responses API 支持 `previous_response_id`，30 分钟 TTL，到期自动清理上游会话
+- **外部工具桥接** — 客户端传入 `tools`，代理返回标准 `tool_calls` / `function_call`，不触发 OpenCode 内置工具
+- **内置工具 allowlist** — 请求未带 `tools` 时，仅放行 `OPENCODE_INTERNAL_ALLOWED_TOOLS` 声明的内置工具
+- **可观测性** — `/health/details` 结构化诊断，`/metrics` Prometheus 指标
+- **Web Panel** — 可选内置面板（`/panel`），只读展示状态/模型/诊断，默认关闭
+- **Docker 部署** — 一键启动，自动拉起 OpenCode 后端
+
+## 🚀 快速开始
+
+### Docker（推荐）
+
+```bash
+git clone https://github.com/TiaraBasori/opencode2api.git
+cd opencode2api
+cp .env.example .env        # 编辑 .env，必填 API_KEY 与 OPENCODE_SERVER_PASSWORD
+docker compose up -d
+curl http://127.0.0.1:10000/health
+```
+
+> 默认 Compose 配置不挂载宿主机项目目录，避免覆盖镜像内已安装的 `node_modules`。需要源码热更新时，请单独使用开发用的 Compose 覆盖文件。
+
+### Node.js（本地开发）
+
+```bash
+# 安装 OpenCode CLI
+npm install -g opencode-ai@1.19.0
+# 或 curl -fsSL https://opencode.ai/install | bash
+
+git clone https://github.com/TiaraBasori/opencode2api.git
+cd opencode2api
+npm install
+cp config.json.example config.json
+npm start
+```
+
+### Windows 托盘应用
+
+开发时运行 `npm run tray`。要生成 Windows 安装程序，运行 `npm run tray-build`，安装包会输出到 `dist/`。安装并启动后，应用会在托盘中运行并自动启动 API 服务。右键托盘图标可查看状态、启动/停止/重启服务、复制 API 地址、编辑 JSON 和打开日志。选择「Edit JSON」会用系统默认编辑器打开配置；保存后选择「Restart service」使更改生效。退出托盘应用时会停止它启动的服务。若端口上已有外部实例，应用不会擅自停止它。
+
+安装版配置保存在 Electron 用户数据目录下的 `config.json`；开发版使用项目根目录的 `config.json`。首次启动会从 `config.json.example` 创建配置文件。
+
+Web Panel 默认关闭。将配置中的 `WEB_PANEL_ENABLED` 设为 `true` 并重启服务后，托盘菜单中的「Open web panel」即可使用。
+
+## 💡 使用示例
+
+### Chat Completions
+
+```bash
+curl -X POST http://127.0.0.1:10000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "opencode/big-pickle",
+    "messages": [{"role": "user", "content": "你好!"}],
+    "stream": false
+  }'
+```
+
+### Responses API（流式 + 推理）
+
+```bash
+curl -N -X POST http://127.0.0.1:10000/v1/responses \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt5-nano",
+    "input": "用一句话打招呼",
+    "reasoning": {"effort": "high"},
+    "stream": true
+  }'
+```
+
+### 外部工具
+
+```bash
+curl -X POST http://127.0.0.1:10000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "opencode/big-pickle",
+    "messages": [{"role": "user", "content": "帮我获取 https://example.com 的标题"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "web_fetch",
+        "description": "Fetch a URL and return its content summary",
+        "parameters": {
+          "type": "object",
+          "properties": {"url": {"type": "string"}},
+          "required": ["url"]
+        }
+      }
+    }]
+  }'
+```
+
+模型决定调用工具时，非流式响应返回 `message.tool_calls`，流式响应返回 `delta.tool_calls`。
+
+带 `tools` 与不带 `tools` 的 `/v1/chat/completions` 请求都以官方客户端的请求形状直连 OpenCode 的 inference 端点：工具定义原样传给模型（原生 function calling，不再依赖系统提示里的文本约定），配额类错误（429）会原样透传。
+
+### Anthropic Messages API（/v1/messages）
+
+面向 Claude SDK / Anthropic 客户端的端点：`http://127.0.0.1:10000/v1/messages`。认证使用 `x-api-key` header（`Authorization: Bearer` 亦可用），模型决定调用工具时返回 `tool_use` 内容块。Anthropic SDK 的 `baseURL` 应设置为 `http://127.0.0.1:10000`（SDK 会自行追加 `/v1/messages`）。配置的 Claude 模型别名也可在此端点使用。
+
+```bash
+curl -X POST http://127.0.0.1:10000/v1/messages \
+  -H "x-api-key: ***" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 1024,
+    "system": "You are concise.",
+    "messages": [{"role": "user", "content": "你好!"}],
+    "stream": true
+  }'
+```
+
+工具往返（工具结果以 `tool_result` 块回传）：
+
+```bash
+curl -X POST http://127.0.0.1:10000/v1/messages \
+  -H "x-api-key: ***" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "帮我获取 https://example.com 的标题"}],
+    "tools": [{
+      "name": "web_fetch",
+      "description": "Fetch a URL and return its content summary",
+      "input_schema": {
+        "type": "object",
+        "properties": {"url": {"type": "string"}},
+        "required": ["url"]
+      }
+    }]
+  }'
+```
+
+响应包含 `{"type":"tool_use","id":"…","name":"web_fetch","input":{…}}` 内容块（`stop_reason: "tool_use"`）；把工具结果作为 `{"type":"tool_result","tool_use_id":"…","content":"…"}` 用户块发回即可继续对话。`stream: true` 时按 Anthropic SSE 事件序输出 `message_start` → `content_block_*` → `message_delta` → `message_stop`。
+
+## ⚙️ 配置
+
+| 环境变量 | 默认值 | 说明 |
+|:--------|:-------|:-----|
+| `API_KEY` | (空) | 代理的 Bearer 认证密钥 |
+| `OPENCODE_API_KEYS` | (空) | 多用户 API key 列表，`name:key` 逗号分隔（详见 [配置详解](./docs/zh/configuration.md)） |
+| `OPENCODE_SERVER_PASSWORD` | (空) | OpenCode 后端密码 |
+| `OPENCODE_PROXY_PORT` / `PORT` | `10000` | 代理端口 |
+| `OPENCODE_SERVER_PORT` | `10001` | 后端端口（未显式配置 `OPENCODE_SERVER_URL` 时生效） |
+| `OPENCODE_SERVER_URL` | `http://127.0.0.1:10001` | 后端地址 |
+| `OPENCODE_DISABLE_TOOLS` | `true` | 禁用 OpenCode 内置工具 |
+| `OPENCODE_INTERNAL_ALLOWED_TOOLS` | (空) | 请求未带 `tools` 时放行的内置工具，逗号分隔 |
+| `OPENCODE_PROXY_OMIT_SYSTEM_PROMPT` | `false` | 忽略传入的 system prompt |
+| `OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS` | `false` | 自动清理会话存储 |
+| `OPENCODE_USE_ISOLATED_HOME` | `false` | 使用隔离的 OpenCode 配置目录 |
+| `OPENCODE_WEB_PANEL_ENABLED` | `false` | 开启内置 Web Panel（`/panel`） |
+| `OPENCODE_PROXY_DEBUG` | `false` | 调试日志 |
+
+> 📄 完整配置见 [配置详解](./docs/zh/configuration.md)
+
+推荐生产配置：
+
+```env
+API_KEY=your-secret-key
+OPENCODE_SERVER_PASSWORD=your-password
+OPENCODE_DISABLE_TOOLS=true
+OPENCODE_INTERNAL_ALLOWED_TOOLS=web_fetch
+OPENCODE_PROXY_OMIT_SYSTEM_PROMPT=true
+OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS=true
+```
+
+## 🔌 API 端点
+
+| 方法 | 路径 | 说明 |
+|:-----|:-----|:-----|
+| `GET` | `/health` | 健康检查 |
+| `GET` | `/health/details` | 结构化诊断（可配置开关/鉴权） |
+| `GET` | `/metrics` | Prometheus 指标（可配置开关/鉴权） |
+| `GET` | `/panel` | Web Panel 页面（默认关闭，`OPENCODE_WEB_PANEL_ENABLED=true` 开启） |
+| `GET` | `/panel/data.json` | Web Panel 数据源（Bearer/PUBLIC_DIAGNOSTICS 门禁，永不返回密钥值） |
+| `GET` | `/v1/models` | 模型列表 |
+| `POST` | `/v1/chat/completions` | Chat Completions |
+| `POST` | `/v1/responses` | Responses API |
+| `POST` | `/v1/messages` | Anthropic Messages API（兼容 Claude SDK） |
+| `GET` | `/admin/keys` | 多用户 key 列表与用量（管理员认证，配置 `API_KEYS` 后可用） |
+| `POST` | `/admin/keys` | 运行时新增用户 key（管理员认证） |
+| `DELETE` | `/admin/keys/:name` | 移除用户 key（管理员认证） |
+
+模型名称写法：`opencode/big-pickle`、`gpt5-nano`（自动解析为 `gpt-5-nano`）、`opencode/gpt5-nano`。
+
+> 📖 详见 [API 参考](./docs/zh/api-reference.md)
+>
+> 👥 多用户 key、分 key 用量统计与管理端点的完整说明见 [配置详解](./docs/zh/configuration.md#-多用户-api-keys)。
+
+## 🖥️ Web Panel
+
+设 `OPENCODE_WEB_PANEL_ENABLED=true`（或在 config.json 设 `"WEB_PANEL_ENABLED": true`）后，浏览器访问 `http://127.0.0.1:10000/panel` 即可查看只读仪表盘：运行状态（状态/uptime/后端地址）、模型列表、后端诊断（工具模式计数、缓存状态）。页面深色主题、零外部依赖（无外链 CSS/JS，CSP 限定同源）。
+
+配置 `API_KEY` 后，在页面输入代理密钥即可（保存在浏览器 localStorage，用于请求 `/panel/data.json`）；`PUBLIC_DIAGNOSTICS=true` 或未配置 `API_KEY` 时无需输入。面板关闭时两个路由均为 404，数据端点永远不会返回任何密钥值。详见 [配置详解](./docs/zh/configuration.md)。
+
+## 🔧 故障排查
+
+- **请求卡住但 `/v1/models` 正常** — 设 `OPENCODE_USE_ISOLATED_HOME=false` 复用本地登录态
+- **模型找不到** — `curl http://127.0.0.1:10000/v1/models` 确认模型 ID
+- **没有推理输出** — 用 `stream: true` 的 Responses API，并传 `reasoning.effort`
+
+> 📖 更多见 [故障排查](./docs/zh/troubleshooting.md)
+
+## 📚 文档
+
+| 文档 | 说明 |
+|:-----|:-----|
+| [快速开始](./docs/zh/getting-started.md) | 安装与首次运行 |
+| [配置详解](./docs/zh/configuration.md) | 全部环境变量与 config.json |
+| [API 参考](./docs/zh/api-reference.md) | 端点、参数与错误码 |
+| [Docker 部署](./docs/zh/docker.md) | 部署与运维 |
+| [故障排查](./docs/zh/troubleshooting.md) | 常见问题 |
+| [开发指南](./docs/zh/development.md) | 本地开发与测试 |
+
+## 📄 许可证
+
+MIT · 详见 [LICENSE](./LICENSE.md)
+
+## 🙏 致谢
+
+- [dxxzst/opencode-to-openai](https://github.com/dxxzst/opencode-to-openai)
+- [jasonxu114514/opencode2api](https://github.com/jasonxu114514/opencode2api)
+- [lucasliet/opencode-openai-proxy](https://github.com/lucasliet/opencode-openai-proxy)

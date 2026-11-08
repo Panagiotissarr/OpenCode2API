@@ -1,0 +1,25 @@
+{
+    "PORT": 10000,
+    "API_KEY": "your-secret-api-key",
+    "API_KEYS": [
+        { "name": "alice", "key": "sk-alice-..." },
+        { "key": "sk-bare-key-..." }
+    ],
+    "BIND_HOST": "0.0.0.0",
+    "DISABLE_TOOLS": true,
+    "CHAT_SESSION_AFFINITY": false,
+    "USE_ISOLATED_HOME": false,
+    "OMIT_SYSTEM_PROMPT": false,
+    "AUTO_CLEANUP_CONVERSATIONS": false,
+    "CLEANUP_INTERVAL_MS": 43200000,
+    "CLEANUP_MAX_AGE_MS": 86400000,
+    "DEBUG": false,
+    "OPENCODE_SERVER_URL": "http://127.0.0.1:10001",
+    "OPENCODE_PATH": "opencode",
+    "REQUEST_TIMEOUT_MS": 180000,
+    "WEB_PANEL_ENABLED": false,
+    "MODEL_REDIRECTS": {
+        "claude-sonnet-4-5": "opencode/big-pickle",
+        "claude-fable-5-1": "opencode/mimo-2-5-flash"
+    }
+}
